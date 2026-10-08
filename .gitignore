@@ -1,24 +1,44 @@
-# Compiled class file
+# Java
 *.class
-
-# Log file
 *.log
+hs_err_pid*
+replay_pid*
 
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
+# Архивы и jar — игнорируются везде, кроме папок с готовыми бинарниками
 *.jar
 *.war
-*.nar
-*.ear
 *.zip
 *.tar.gz
 *.rar
+!/mods/*.jar
+!/plugins/*.jar
+!/dev/gradle/wrapper/gradle-wrapper.jar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# Gradle
+.gradle/
+build/
+dev/**/repo/
+
+# Запуски Minecraft в dev-окружении
+run/
+run-data/
+runs/
+
+# Кэш datagen
+.cache/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+
+# OS
+.DS_Store
+Thumbs.db

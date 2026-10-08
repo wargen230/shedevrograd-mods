@@ -1,0 +1,23 @@
+plugins {
+    id 'shedevrograd.neoforge-mod'
+}
+
+dependencies {
+    // Кодеки SBK, встраиваются в jar мода (Jar-in-Jar). Версии — как у SimpleBackups.
+    jarJar(implementation('org.tukaani:xz')) {
+        version {
+            strictly '[1.12,2.0)'
+            prefer '1.12'
+        }
+    }
+    jarJar(implementation('com.github.luben:zstd-jni')) {
+        version {
+            strictly '[1.5.7-16,1.6)'
+            prefer '1.5.7-16'
+        }
+    }
+
+    // На 1.21.1 обычные библиотеки (не моды) не попадают в runClient/runServer сами
+    additionalRuntimeClasspath 'org.tukaani:xz:1.12'
+    additionalRuntimeClasspath 'com.github.luben:zstd-jni:1.5.7-16'
+}

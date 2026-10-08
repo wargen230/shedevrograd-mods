@@ -1,0 +1,8 @@
+plugins {
+    id 'groovy-gradle-plugin'
+}
+
+dependencies {
+    // ModDevGradle — https://github.com/neoforged/ModDevGradle
+    implementation 'net.neoforged.moddev:net.neoforged.moddev.gradle.plugin:2.0.148'
+}

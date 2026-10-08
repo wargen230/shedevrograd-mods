@@ -1,0 +1,122 @@
+// Общая конфигурация для всех NeoForge-модов в dev/mods/<id>.
+// Мод задаёт в своём gradle.properties: mod_id, mod_name, mod_version, mod_group_id.
+
+plugins {
+    id 'java-library'
+    id 'idea'
+    id 'net.neoforged.moddev'
+}
+
+def modId = project.property('mod_id') as String
+
+version = project.property('mod_version')
+group = project.property('mod_group_id')
+
+base {
+    archivesName = "${modId}-neoforge-${project.property('minecraft_version')}"
+}
+
+// Minecraft 1.21.1 работает на Java 21
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+sourceSets.main.resources {
+    // Ресурсы, сгенерированные datagen
+    srcDir 'src/generated/resources'
+    exclude '**/*.bbmodel'
+    exclude 'src/generated/**/.cache'
+}
+
+// localRuntime — зависимости только для запуска в dev-окружении (не попадают в зависимости мода)
+configurations {
+    localRuntime
+    runtimeClasspath.extendsFrom localRuntime
+}
+
+neoForge {
+    version = project.property('neo_version')
+
+    parchment {
+        mappingsVersion = project.property('parchment_mappings_version')
+        minecraftVersion = project.property('parchment_minecraft_version')
+    }
+
+    runs {
+        client {
+            client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', modId
+        }
+        server {
+            server()
+            programArgument '--nogui'
+            systemProperty 'neoforge.enabledGameTestNamespaces', modId
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', modId
+        }
+        data {
+            data()
+            programArguments.addAll '--mod', modId, '--all',
+                    '--output', file('src/generated/resources/').absolutePath,
+                    '--existing', file('src/main/resources/').absolutePath
+        }
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        create(modId) {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+// Подстановка ${...} в src/main/templates (neoforge.mods.toml и т.п.)
+def generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    def replaceProperties = [
+            minecraft_version      : project.property('minecraft_version'),
+            minecraft_version_range: project.property('minecraft_version_range'),
+            neo_version            : project.property('neo_version'),
+            loader_version_range   : project.property('loader_version_range'),
+            mod_id                 : modId,
+            mod_name               : project.property('mod_name'),
+            mod_license            : project.property('mod_license'),
+            mod_version            : project.property('mod_version'),
+            mod_authors            : project.property('mod_authors'),
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into layout.buildDirectory.dir('generated/sources/modMetadata')
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// Run-задачи ModDevGradle — обычный JavaExec без stdin: команды, набранные
+// в консоли runServer, до сервера не доходят. Передаём ввод терминала серверу.
+tasks.withType(JavaExec).configureEach {
+    if (name == 'runServer') {
+        standardInput = System.in
+    }
+}
+
+// ./gradlew :mods:<id>:deploy — собрать мод и положить jar в <репозиторий>/mods
+tasks.register('deploy', Copy) {
+    group = 'shedevrograd'
+    description = 'Собирает мод и копирует jar в папку mods/ в корне репозитория'
+    from tasks.named('jar')
+    into rootProject.layout.projectDirectory.dir('../mods')
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}

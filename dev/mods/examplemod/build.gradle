@@ -1,0 +1,11 @@
+plugins {
+    id 'shedevrograd.neoforge-mod'
+}
+
+dependencies {
+    // Зависимость на другой мод из этого репозитория:
+    // implementation project(':mods:othermod')
+
+    // Мод только для запуска в dev-окружении (например, JEI):
+    // localRuntime "mezz.jei:jei-1.21.1-neoforge:<version>"
+}

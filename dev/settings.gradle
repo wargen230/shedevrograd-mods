@@ -1,0 +1,24 @@
+pluginManagement {
+    // Общая конфигурация модов (convention-плагин shedevrograd.neoforge-mod)
+    includeBuild 'build-logic'
+    repositories {
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    // Автоматически скачивает нужный JDK, если локально его нет
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'shedevrograd-dev'
+
+// Каждая папка mods/<id> и plugins/<id> с build.gradle подключается как подпроект
+// :mods:<id> / :plugins:<id> — регистрировать вручную ничего не нужно.
+['mods', 'plugins'].each { group ->
+    def groupDir = file(group)
+    if (!groupDir.isDirectory()) return
+    groupDir.listFiles().findAll { new File(it, 'build.gradle').isFile() }.sort().each {
+        include ":${group}:${it.name}"
+    }
+}
