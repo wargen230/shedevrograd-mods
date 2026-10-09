@@ -1,0 +1,5 @@
+sbk-tool.jar bundles lz4-java 1.8.0 (https://github.com/lz4/lz4-java).
+The mod jar does not bundle it: Minecraft ships lz4-java itself.
+
+lz4-java is licensed under the Apache License, Version 2.0.
+The full license text is identical to SimpleBackups-LICENSE.txt in this directory.

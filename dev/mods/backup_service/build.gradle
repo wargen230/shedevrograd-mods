@@ -2,6 +2,10 @@ plugins {
     id 'shedevrograd.neoforge-mod'
 }
 
+configurations {
+    sbkToolLibs
+}
+
 dependencies {
     // Кодеки SBK, встраиваются в jar мода (Jar-in-Jar). Версии — как у SimpleBackups.
     jarJar(implementation('org.tukaani:xz')) {
@@ -20,4 +24,46 @@ dependencies {
     // На 1.21.1 обычные библиотеки (не моды) не попадают в runClient/runServer сами
     additionalRuntimeClasspath 'org.tukaani:xz:1.12'
     additionalRuntimeClasspath 'com.github.luben:zstd-jni:1.5.7-16'
+
+    // Юнит-тесты логики без Minecraft: ./gradlew :mods:backup_service:test
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // Библиотеки консольной утилиты: она работает без Minecraft, поэтому lz4 тоже свой
+    sbkToolLibs 'org.tukaani:xz:1.12'
+    sbkToolLibs 'com.github.luben:zstd-jni:1.5.7-16'
+    sbkToolLibs 'org.lz4:lz4-java:1.8.0'
+}
+
+// Консольная утилита для распаковки бэкапов без сервера:
+// ./gradlew :mods:backup_service:sbkTool → build/libs/sbk-tool-<версия>.jar
+def archiveOperations = services.get(ArchiveOperations)
+def sbkTool = tasks.register('sbkTool', Jar) {
+    group = 'shedevrograd'
+    description = 'Собирает sbk-tool.jar — утилиту распаковки бэкапов, запускается через java -jar'
+    archiveBaseName = 'sbk-tool'
+
+    from(sourceSets.main.output) {
+        include 'ru/shedevrograd/backup_service/sbk/**'
+        include 'ru/shedevrograd/backup_service/archive/**'
+        include 'ru/shedevrograd/backup_service/tool/**'
+        include 'META-INF/licenses/**'
+    }
+    from(configurations.sbkToolLibs.elements.map { jars -> jars.collect { archiveOperations.zipTree(it) } }) {
+        // подписи и манифесты библиотек конфликтуют с нашим манифестом
+        exclude 'META-INF/MANIFEST.MF', 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', '**/module-info.class'
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes 'Main-Class': 'ru.shedevrograd.backup_service.tool.SbkTool'
+    }
+}
+
+tasks.named('build') {
+    dependsOn sbkTool
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
 }

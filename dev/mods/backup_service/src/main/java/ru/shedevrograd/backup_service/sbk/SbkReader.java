@@ -128,7 +128,13 @@ public final class SbkReader {
                 byte[] preprocessed = SbkFrameExtractor.slice(frameCache, entry, frameSize);
                 byte[] fileBytes = SbkReader.postprocess(entry.group(), preprocessed);
 
-                Path outFile = outputDir.resolve(entry.path());
+                // Shedevrograd: upstream resolved index paths as-is; a crafted or corrupt index with
+                // "../" or an absolute path could write outside outputDir
+                Path baseDir = outputDir.toAbsolutePath().normalize();
+                Path outFile = baseDir.resolve(entry.path()).normalize();
+                if (!outFile.startsWith(baseDir)) {
+                    throw new SbkException("Archive entry escapes the output directory: " + entry.path());
+                }
                 Files.createDirectories(outFile.getParent());
                 Files.write(outFile, fileBytes);
                 Files.setLastModifiedTime(outFile, FileTime.fromMillis(entry.mtimeMs()));

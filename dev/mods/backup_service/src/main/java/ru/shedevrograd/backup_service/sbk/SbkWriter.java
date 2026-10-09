@@ -69,6 +69,15 @@ public final class SbkWriter {
      * @return number of files written
      */
     public static long compress(Path sourceDir, List<Path> files, Path levelName, Path outputFile, SbkWriteOptions options, SbkProgress progress) throws IOException {
+        return SbkWriter.compress(sourceDir, files, levelName, outputFile, options, progress, Map.of());
+    }
+
+    /**
+     * Shedevrograd: same as above, plus {@code extraEntries} (path relative to {@code levelName} →
+     * content) written verbatim into the {@link SbkGroup#RAW} group. Used for metadata such as the
+     * diff manifest, which does not exist as a file in the world directory.
+     */
+    public static long compress(Path sourceDir, List<Path> files, Path levelName, Path outputFile, SbkWriteOptions options, SbkProgress progress, Map<String, byte[]> extraEntries) throws IOException {
         SbkAlgorithm algorithm = SbkWriter.resolveAlgorithm(options.preferredAlgorithm);
         int level = options.lzmaPreset;
 
@@ -77,13 +86,13 @@ public final class SbkWriter {
 
         ExecutorService pool = Executors.newFixedThreadPool(nThreads);
         try {
-            return SbkWriter.doCompress(sourceDir, files, levelName, outputFile, algorithm, level, maxInFlight, pool, progress);
+            return SbkWriter.doCompress(sourceDir, files, levelName, outputFile, algorithm, level, maxInFlight, pool, progress, extraEntries);
         } finally {
             pool.shutdown();
         }
     }
 
-    private static long doCompress(Path sourceDir, List<Path> files, Path levelName, Path outputFile, SbkAlgorithm algorithm, int level, int maxInFlight, ExecutorService pool, SbkProgress progress) throws IOException {
+    private static long doCompress(Path sourceDir, List<Path> files, Path levelName, Path outputFile, SbkAlgorithm algorithm, int level, int maxInFlight, ExecutorService pool, SbkProgress progress, Map<String, byte[]> extraEntries) throws IOException {
         // --- Classify + sort ---
         Map<SbkGroup, List<Path>> byGroup = new EnumMap<>(SbkGroup.class);
         for (SbkGroup g : SbkGroup.values()) byGroup.put(g, new ArrayList<>());
@@ -154,24 +163,19 @@ public final class SbkWriter {
                     rawBytes = null;
 
                     builder.add(archivePathStr, preprocessed.length, originalSize, mtimeMs, fileChecksum);
-
-                    int written = 0;
-                    while (written < preprocessed.length) {
-                        int space = (int) (SbkHeader.DEFAULT_FRAME_SIZE - frameBuffer.size());
-                        int toWrite = Math.min(space, preprocessed.length - written);
-                        frameBuffer.write(preprocessed, written, toWrite);
-                        written += toWrite;
-
-                        if (frameBuffer.size() >= SbkHeader.DEFAULT_FRAME_SIZE) {
-                            SbkWriter.submitFrame(frameBuffer, pool, algorithm, level, inFlight);
-                            if (inFlight.size() >= maxInFlight) {
-                                SbkWriter.drainOldest(randomAccessFile, inFlight, group, frameDir);
-                            }
-                        }
-                    }
+                    SbkWriter.appendToFrames(preprocessed, frameBuffer, pool, algorithm, level, inFlight, maxInFlight, randomAccessFile, group, frameDir);
 
                     completed[0]++;
                     progress.onFile(completed[0], totalFiles, archivePathStr);
+                }
+
+                if (group == SbkGroup.RAW) {
+                    for (Map.Entry<String, byte[]> extra : new TreeMap<>(extraEntries).entrySet()) {
+                        String archivePathStr = levelName.resolve(extra.getKey()).toString().replace('\\', '/');
+                        byte[] bytes = extra.getValue();
+                        builder.add(archivePathStr, bytes.length, bytes.length, System.currentTimeMillis(), SbkChecksum.xxHash32(bytes));
+                        SbkWriter.appendToFrames(bytes, frameBuffer, pool, algorithm, level, inFlight, maxInFlight, randomAccessFile, group, frameDir);
+                    }
                 }
 
                 if (frameBuffer.size() > 0) {
@@ -241,6 +245,23 @@ public final class SbkWriter {
         }
 
         return preferred;
+    }
+
+    private static void appendToFrames(byte[] data, ByteArrayOutputStream frameBuffer, ExecutorService pool, SbkAlgorithm algorithm, int level, Deque<PendingFrame> inFlight, int maxInFlight, RandomAccessFile raf, SbkGroup group, SbkFrameDir frameDir) throws IOException {
+        int written = 0;
+        while (written < data.length) {
+            int space = (int) (SbkHeader.DEFAULT_FRAME_SIZE - frameBuffer.size());
+            int toWrite = Math.min(space, data.length - written);
+            frameBuffer.write(data, written, toWrite);
+            written += toWrite;
+
+            if (frameBuffer.size() >= SbkHeader.DEFAULT_FRAME_SIZE) {
+                SbkWriter.submitFrame(frameBuffer, pool, algorithm, level, inFlight);
+                if (inFlight.size() >= maxInFlight) {
+                    SbkWriter.drainOldest(raf, inFlight, group, frameDir);
+                }
+            }
+        }
     }
 
     private static void submitFrame(ByteArrayOutputStream frameBuffer, ExecutorService pool, SbkAlgorithm algorithm, int level, Deque<PendingFrame> inFlight) {
