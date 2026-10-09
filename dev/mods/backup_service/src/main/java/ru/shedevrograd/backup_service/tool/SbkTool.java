@@ -10,6 +10,7 @@ import ru.shedevrograd.backup_service.sbk.SbkProgress;
 import ru.shedevrograd.backup_service.sbk.SbkReader;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
@@ -221,8 +222,16 @@ public final class SbkTool {
             if (entry.group() != SbkGroup.RAW) {
                 continue;
             }
-            byte[] bytes = Files.readAllBytes(staging.resolve(entry.path()));
-            if (SbkChecksum.xxHash32(bytes) != entry.fileChecksum()) {
+            // streamed: a verbatim file can be larger than 2 GiB, the limit of one array
+            SbkChecksum.Streaming checksum = new SbkChecksum.Streaming();
+            byte[] chunk = new byte[1024 * 1024];
+            try (InputStream in = Files.newInputStream(staging.resolve(entry.path()))) {
+                int read;
+                while ((read = in.readNBytes(chunk, 0, chunk.length)) > 0) {
+                    checksum.update(chunk, 0, read);
+                }
+            }
+            if (checksum.digest() != entry.fileChecksum()) {
                 throw new IOException("Контрольная сумма не совпала: " + entry.path() + ". Архив повреждён.");
             }
             verified++;

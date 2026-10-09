@@ -52,6 +52,8 @@ import java.util.zip.GZIPInputStream;
 public final class SbkWriter {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SbkWriter.class);
+    /** Shedevrograd: files above this size skip preprocessing and are streamed instead of loaded whole. */
+    static final long LARGE_FILE_SIZE = 64L * 1024 * 1024;
 
     private SbkWriter() {}
 
@@ -134,11 +136,37 @@ public final class SbkWriter {
                     // Shedevrograd: upstream logged any IOException and silently dropped the file,
                     // producing an archive that looks complete but misses data. Here a read error
                     // fails the whole archive; only files that vanished meanwhile are skipped.
-                    byte[] rawBytes;
                     BasicFileAttributes attrs;
                     try {
-                        rawBytes = Files.readAllBytes(file);
                         attrs = Files.readAttributes(file, BasicFileAttributes.class);
+                    } catch (NoSuchFileException e) {
+                        LOGGER.warn("[SBK] Skipped vanished file {}", rel);
+                        completed[0]++;
+                        progress.onFile(completed[0], totalFiles, archivePathStr);
+                        continue;
+                    }
+
+                    // Shedevrograd: upstream read every file into one array, which fails for files over
+                    // 2 GiB (mod databases). Large files are stored verbatim and streamed in chunks.
+                    if (attrs.size() > LARGE_FILE_SIZE) {
+                        if (group != SbkGroup.RAW) {
+                            byGroup.get(SbkGroup.RAW).add(file);
+                            continue;
+                        }
+                        LOGGER.info("[SBK] Streaming large file {} ({} MiB)", rel, attrs.size() / (1024 * 1024));
+                        try {
+                            SbkWriter.streamLargeFile(file, archivePathStr, attrs, builder, frameBuffer, pool, algorithm, level, inFlight, maxInFlight, randomAccessFile, group, frameDir);
+                        } catch (NoSuchFileException e) {
+                            LOGGER.warn("[SBK] Skipped vanished file {}", rel);
+                        }
+                        completed[0]++;
+                        progress.onFile(completed[0], totalFiles, archivePathStr);
+                        continue;
+                    }
+
+                    byte[] rawBytes;
+                    try {
+                        rawBytes = Files.readAllBytes(file);
                     } catch (NoSuchFileException e) {
                         LOGGER.warn("[SBK] Skipped vanished file {}", rel);
                         completed[0]++;
@@ -245,6 +273,28 @@ public final class SbkWriter {
         }
 
         return preferred;
+    }
+
+    /**
+     * Streams a file into the RAW group in 1 MiB chunks. Size and checksum are taken from the bytes
+     * actually read, so the index stays consistent even if a mod keeps writing to the file meanwhile.
+     */
+    private static void streamLargeFile(Path file, String archivePathStr, BasicFileAttributes attrs, SbkSolidBuilder builder,
+                                        ByteArrayOutputStream frameBuffer, ExecutorService pool, SbkAlgorithm algorithm, int level,
+                                        Deque<PendingFrame> inFlight, int maxInFlight, RandomAccessFile raf, SbkGroup group, SbkFrameDir frameDir) throws IOException {
+        SbkChecksum.Streaming checksum = new SbkChecksum.Streaming();
+        long total = 0;
+        byte[] chunk = new byte[1024 * 1024];
+        try (InputStream in = Files.newInputStream(file)) {
+            int read;
+            while ((read = in.readNBytes(chunk, 0, chunk.length)) > 0) {
+                checksum.update(chunk, 0, read);
+                SbkWriter.appendToFrames(read == chunk.length ? chunk : Arrays.copyOf(chunk, read), frameBuffer, pool, algorithm, level, inFlight, maxInFlight, raf, group, frameDir);
+                total += read;
+            }
+        }
+        // add() after writing: the entry's stream offset is the builder's offset before this file
+        builder.add(archivePathStr, total, total, attrs.lastModifiedTime().toMillis(), checksum.digest());
     }
 
     private static void appendToFrames(byte[] data, ByteArrayOutputStream frameBuffer, ExecutorService pool, SbkAlgorithm algorithm, int level, Deque<PendingFrame> inFlight, int maxInFlight, RandomAccessFile raf, SbkGroup group, SbkFrameDir frameDir) throws IOException {

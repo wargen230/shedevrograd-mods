@@ -72,6 +72,77 @@ public final class SbkChecksum {
         return h32;
     }
 
+    /**
+     * Shedevrograd: incremental xxHash32 for files too large to hold in one array (over 2 GiB).
+     * Produces exactly the same value as {@link #xxHash32(byte[])} over the concatenated input.
+     */
+    public static final class Streaming {
+        private int v1 = PRIME1 + PRIME2;
+        private int v2 = PRIME2;
+        private int v3 = 0;
+        private int v4 = -PRIME1;
+        private long totalLength = 0;
+        private final byte[] buffer = new byte[16];
+        private int buffered = 0;
+
+        public void update(byte[] data, int offset, int length) {
+            this.totalLength += length;
+            int i = offset;
+            int end = offset + length;
+
+            if (this.buffered > 0) {
+                int take = Math.min(16 - this.buffered, length);
+                System.arraycopy(data, i, this.buffer, this.buffered, take);
+                this.buffered += take;
+                i += take;
+                if (this.buffered < 16) {
+                    return;
+                }
+                this.round(this.buffer, 0);
+                this.buffered = 0;
+            }
+
+            while (i + 16 <= end) {
+                this.round(data, i);
+                i += 16;
+            }
+
+            this.buffered = end - i;
+            System.arraycopy(data, i, this.buffer, 0, this.buffered);
+        }
+
+        public int digest() {
+            int h32 = this.totalLength >= 16
+                    ? Integer.rotateLeft(this.v1, 1) + Integer.rotateLeft(this.v2, 7) + Integer.rotateLeft(this.v3, 12) + Integer.rotateLeft(this.v4, 18)
+                    : PRIME5;
+            h32 += (int) this.totalLength;
+
+            int i = 0;
+            while (i + 4 <= this.buffered) {
+                h32 = Integer.rotateLeft(h32 + (SbkChecksum.getIntLE(this.buffer, i) * PRIME3), 17) * PRIME4;
+                i += 4;
+            }
+            while (i < this.buffered) {
+                h32 = Integer.rotateLeft(h32 + ((this.buffer[i] & 0xFF) * PRIME5), 11) * PRIME1;
+                i++;
+            }
+
+            h32 ^= h32 >>> 15;
+            h32 *= PRIME2;
+            h32 ^= h32 >>> 13;
+            h32 *= PRIME3;
+            h32 ^= h32 >>> 16;
+            return h32;
+        }
+
+        private void round(byte[] data, int i) {
+            this.v1 = Integer.rotateLeft(this.v1 + (SbkChecksum.getIntLE(data, i) * PRIME2), 13) * PRIME1;
+            this.v2 = Integer.rotateLeft(this.v2 + (SbkChecksum.getIntLE(data, i + 4) * PRIME2), 13) * PRIME1;
+            this.v3 = Integer.rotateLeft(this.v3 + (SbkChecksum.getIntLE(data, i + 8) * PRIME2), 13) * PRIME1;
+            this.v4 = Integer.rotateLeft(this.v4 + (SbkChecksum.getIntLE(data, i + 12) * PRIME2), 13) * PRIME1;
+        }
+    }
+
     private static int getIntLE(byte[] data, int offset) {
         return (data[offset] & 0xFF)
                 | ((data[offset + 1] & 0xFF) << 8)

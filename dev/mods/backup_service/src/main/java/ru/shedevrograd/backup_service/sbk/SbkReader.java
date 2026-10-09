@@ -93,41 +93,6 @@ public final class SbkReader {
                     continue;
                 }
 
-                Set<Long> requiredKeys = SbkFrameExtractor.requiredFrames(entry, frameSize);
-                for (long key : requiredKeys) {
-                    if (!frameCache.containsKey(key)) {
-                        int groupId = (int) (key >>> 32);
-                        long frameIndex = key & 0xFFFFFFFFL;
-                        SbkGroup group = SbkGroup.fromId(groupId);
-                        if (group == null) throw new SbkException("Unknown group id: " + groupId);
-
-                        List<SbkFrameEntry> gFrames = frameDir.framesFor(group);
-                        if (frameIndex >= gFrames.size()) {
-                            throw new SbkException("Frame index " + frameIndex
-                                    + " out of range for group " + group
-                                    + " (size=" + gFrames.size() + ")");
-                        }
-                        SbkFrameEntry fe = gFrames.get((int) frameIndex);
-
-                        raf.seek(fe.frameOffset());
-                        byte[] compData = new byte[fe.compressedSize()];
-                        raf.readFully(compData);
-
-                        int actualChecksum = SbkChecksum.xxHash32(compData);
-                        if (actualChecksum != fe.checksum()) {
-                            throw new SbkException("Frame checksum mismatch for group "
-                                    + group + " frame " + frameIndex);
-                        }
-
-                        byte[] decompressed = SbkFrameCompressor.decompress(
-                                compData, header.algorithm, fe.rawSize());
-                        frameCache.put(key, decompressed);
-                    }
-                }
-
-                byte[] preprocessed = SbkFrameExtractor.slice(frameCache, entry, frameSize);
-                byte[] fileBytes = SbkReader.postprocess(entry.group(), preprocessed);
-
                 // Shedevrograd: upstream resolved index paths as-is; a crafted or corrupt index with
                 // "../" or an absolute path could write outside outputDir
                 Path baseDir = outputDir.toAbsolutePath().normalize();
@@ -136,7 +101,20 @@ public final class SbkReader {
                     throw new SbkException("Archive entry escapes the output directory: " + entry.path());
                 }
                 Files.createDirectories(outFile.getParent());
-                Files.write(outFile, fileBytes);
+
+                if (entry.group() == SbkGroup.RAW && entry.streamRawSize() > SbkWriter.LARGE_FILE_SIZE) {
+                    // Shedevrograd: a large file may exceed 2 GiB, the limit of one array; write it frame by frame
+                    SbkReader.streamEntry(raf, header, frameDir, frameCache, entry, frameSize, outFile);
+                } else {
+                    for (long key : SbkFrameExtractor.requiredFrames(entry, frameSize)) {
+                        if (!frameCache.containsKey(key)) {
+                            frameCache.put(key, SbkReader.loadFrame(raf, header, frameDir, key));
+                        }
+                    }
+
+                    byte[] preprocessed = SbkFrameExtractor.slice(frameCache, entry, frameSize);
+                    Files.write(outFile, SbkReader.postprocess(entry.group(), preprocessed));
+                }
                 Files.setLastModifiedTime(outFile, FileTime.fromMillis(entry.mtimeMs()));
 
                 extracted++;
@@ -163,6 +141,72 @@ public final class SbkReader {
         info.entries().forEach(entry -> toExtract.add(entry.path()));
 
         return SbkReader.extract(archivePath, outputDir, toExtract, progress);
+    }
+
+    /** Reads, verifies and decompresses one frame. */
+    private static byte[] loadFrame(RandomAccessFile raf, SbkHeader header, SbkFrameDir frameDir, long key) throws IOException {
+        int groupId = (int) (key >>> 32);
+        long frameIndex = key & 0xFFFFFFFFL;
+        SbkGroup group = SbkGroup.fromId(groupId);
+        if (group == null) throw new SbkException("Unknown group id: " + groupId);
+
+        List<SbkFrameEntry> gFrames = frameDir.framesFor(group);
+        if (frameIndex >= gFrames.size()) {
+            throw new SbkException("Frame index " + frameIndex
+                    + " out of range for group " + group
+                    + " (size=" + gFrames.size() + ")");
+        }
+        SbkFrameEntry fe = gFrames.get((int) frameIndex);
+
+        raf.seek(fe.frameOffset());
+        byte[] compData = new byte[fe.compressedSize()];
+        raf.readFully(compData);
+
+        int actualChecksum = SbkChecksum.xxHash32(compData);
+        if (actualChecksum != fe.checksum()) {
+            throw new SbkException("Frame checksum mismatch for group "
+                    + group + " frame " + frameIndex);
+        }
+
+        return SbkFrameCompressor.decompress(compData, header.algorithm, fe.rawSize());
+    }
+
+    /**
+     * Shedevrograd: writes an entry frame by frame without assembling it in memory. Only the last
+     * frame is kept in the cache, the next entry in the stream may start inside it.
+     */
+    private static void streamEntry(RandomAccessFile raf, SbkHeader header, SbkFrameDir frameDir, Map<Long, byte[]> frameCache,
+                                    SbkIndexEntry entry, long frameSize, Path outFile) throws IOException {
+        long entryStart = entry.streamOffset();
+        long entryEnd = entryStart + entry.streamRawSize();
+        long startFrame = entryStart / frameSize;
+        long endFrame = (entryEnd - 1) / frameSize;
+        long written = 0;
+
+        try (OutputStream out = Files.newOutputStream(outFile)) {
+            for (long f = startFrame; f <= endFrame; f++) {
+                long key = ((long) entry.group().id << 32) | f;
+                byte[] frame = frameCache.get(key);
+                if (frame == null) {
+                    frame = SbkReader.loadFrame(raf, header, frameDir, key);
+                    if (f == endFrame) {
+                        frameCache.put(key, frame);
+                    }
+                }
+
+                long frameStart = f * frameSize;
+                long readStart = Math.max(entryStart, frameStart);
+                long readEnd = Math.min(entryEnd, frameStart + frame.length);
+                if (readStart < readEnd) {
+                    out.write(frame, (int) (readStart - frameStart), (int) (readEnd - readStart));
+                    written += readEnd - readStart;
+                }
+            }
+        }
+
+        if (written != entry.streamRawSize()) {
+            throw new SbkException("Failed to extract " + entry.path() + ": expected " + entry.streamRawSize() + " bytes but got " + written);
+        }
     }
 
     private static void evictUnneededFrames(Map<Long, byte[]> frameCache, List<SbkIndexEntry> entries, int currentIndex, long frameSize) {
