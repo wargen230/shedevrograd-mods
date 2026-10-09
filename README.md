@@ -51,8 +51,3 @@ dev/
 описание и зависимости — в `src/main/templates/META-INF/neoforge.mods.toml`.
 
 Версии NeoForge/Minecraft меняются в одном месте — `dev/gradle.properties`.
-
-## IDE
-
-Открыть папку `dev/` в IntelliJ IDEA как Gradle-проект. Конфигурации запуска
-(`runClient`, `runServer`, …) появятся после импорта.
